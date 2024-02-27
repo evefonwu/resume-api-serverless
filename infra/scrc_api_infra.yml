@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# This template creates a serverless backend of the API. It uses lambda stub function in this infra creation stage, and will be updated with the cicd workflow that deploys code to AWS Lambda.
+
+Parameters:
+  DDBTableName:
+    Type: String
+    Default: MyApplications
+  FunctionName:
+    Type: String
+    Default: lambda_function
+  ApiName:
+    Type: String
+    Default: SCRC-API
+  ApiDeploymentStageName:
+    Type: String
+    Default: dev
+  SubscriberEndpoint:
+    Description: Email Address to Receive SNS Notifications
+    Type: String
+
+Resources:
+  myDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Ref DDBTableName
+      AttributeDefinitions:
+        - AttributeName: application_id
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: application_id
+          KeyType: HASH
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 2
+        WriteCapacityUnits: 2
+
+  myLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Increment visits count
+      FunctionName: !Ref FunctionName
+      PackageType: Zip
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):          
+            return {
+                'statusCode': 200,
+                'body': json.dumps('Stub Function')
+            }
+      Role: !GetAtt myLambdaRole.Arn
+
+  myLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Allow Lambda CloudWatch Put Log Events
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+
+  # Provide API Gateway permission to invoke lambda function
+  myLambdaResourcePolicyAllowInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt myLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+
+  myApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: REST API
+      Name: !Ref ApiName
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # PassthroughBehavior allows body of lambda's response through
+  myApiRootRoutePostMethod: # Resource:/ HTTP Method: POST
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      ResourceId: !GetAtt myApi.RootResourceId
+      RestApiId: !Ref myApi
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        Uri: !Sub >-
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${myLambdaFunction.Arn}/invocations
+
+  # Resource: /
+  # HTTP Method: OPTIONS
+  # CORS Pre-flight OPTIONS Method
+  myApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      ResourceId: !GetAtt myApi.RootResourceId
+      RestApiId: !Ref myApi
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  # deploy the API to a stage
+  myApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - myApiRootRoutePostMethod
+      - myApiOptionsMethod
+    Properties:
+      RestApiId: !Ref myApi
+      StageName: !Ref ApiDeploymentStageName
+
+  # monitoring and alerting
+  myInfraSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: SCRCInfra
+      Subscription:
+        - Endpoint: !Ref SubscriberEndpoint
+          Protocol: email
+
+  # TODO: updated policy, test!
+  mySNSAccessPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Allow Cloudwatch to publish to infra topic
+            Effect: Allow
+            Principal:
+              Service: "cloudwatch.amazonaws.com"
+            Action: sns:Publish
+            Resource: "*"
+      Topics:
+        - !Ref myInfraSNSTopic
+
+  # test alarm:
+  myApiAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Detect client-side errors in API requests
+      AlarmActions:
+        - !Ref myInfraSNSTopic
+      MetricName: 4XXError
+      Namespace: AWS/ApiGateway
+      Statistic: Average
+      Period: 60 # seconds
+      DatapointsToAlarm: 5
+      EvaluationPeriods: 5
+      Threshold: 0 # 0.05
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ApiName
+          Value: !Ref ApiName
+        - Name: Stage
+          Value: !Ref ApiDeploymentStageName
+
+Outputs:
+  myApiStageURL:
+    Value: !Sub https://${myApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiDeploymentStageName}
