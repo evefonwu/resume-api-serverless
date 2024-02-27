@@ -44,7 +44,7 @@ def lambda_handler(event,context):
             )                
             updatedCount = ddbResponse['Attributes']['visit_count']['N']
     
-    #print("Visit count:" + str(updatedCount))
+    #print("Visit #:" + str(updatedCount))
     
     response = {
         'statusCode': 200,
