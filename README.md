@@ -1,5 +1,5 @@
-# The Cloud Resume Challenge
+# API
 
-[Blog post on how I completed](https://dev.to/evefonwu/preparing-for-a-cloud-engineering-role-bof) the Cloud Resume Challenge - AWS Edition
+[The Cloud Resume Challenge](https://cloudresumechallenge.dev/docs/the-challenge/aws/)
 
-Check out the [Cloud Resume Challenge](https://cloudresumechallenge.dev/docs/the-challenge/aws/)
+[My blog post](https://dev.to/evefonwu/preparing-for-a-cloud-engineering-role-bof)
